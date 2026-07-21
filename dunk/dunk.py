@@ -1,4 +1,5 @@
 import functools
+import io
 import os
 import sys
 from collections import defaultdict
@@ -16,6 +17,9 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
+from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
+from textual.widgets import Footer, Header, Static
 from unidiff import PatchSet
 from unidiff.patch import Hunk, Line, PatchedFile
 
@@ -42,10 +46,6 @@ theme = Theme(
         "border": MONOKAI_LIGHT_ACCENT,
     }
 )
-force_width, _ = os.get_terminal_size(2)
-console = Console(force_terminal=True, width=force_width, theme=theme)
-
-
 def find_git_root() -> Path:
     cwd = Path.cwd()
     if (cwd / ".git").exists():
@@ -78,9 +78,79 @@ def loop_first(values: Iterable[T]) -> Iterable[Tuple[bool, T]]:
         yield False, value
 
 
-def main():
+class DunkApp(App[None]):
+    """A scrollable Textual viewer for a rendered git diff."""
+
+    CSS = """
+    Screen {
+        background: #0d0f0b;
+    }
+
+    #diff {
+        width: auto;
+        min-width: 100%;
+        padding: 1 0;
+    }
+    """
+
+    BINDINGS = [("q", "quit", "Quit")]
+
+    def __init__(self, diff: str, project_root: Path) -> None:
+        """Create the app for ``diff`` relative to ``project_root``.
+
+        Parameters
+        ----------
+        diff
+            Unified diff text received from standard input.
+        project_root
+            Repository root used to locate the current versions of changed files.
+        """
+        super().__init__()
+        self.diff = diff
+        self.project_root = project_root
+
+    def compose(self) -> ComposeResult:
+        """Build the application chrome and scrollable diff area."""
+        yield Header(show_clock=False)
+        with VerticalScroll():
+            yield Static(id="diff")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Render the incoming diff once Textual knows the viewport size."""
+        self.title = "dunk"
+        self.sub_title = "side-by-side diff"
+        self.render_diff()
+
+    def on_resize(self) -> None:
+        """Reflow the diff when the terminal viewport changes size."""
+        if self.is_mounted:
+            self.render_diff()
+
+    def render_diff(self) -> None:
+        """Render Rich's syntax-aware output into Textual-compatible ANSI text."""
+        output = io.StringIO()
+        render_console = Console(
+            file=output,
+            force_terminal=True,
+            color_system="truecolor",
+            width=max(40, self.size.width),
+            theme=theme,
+        )
+        render_patch_set(
+            patch_set=PatchSet(self.diff),
+            project_root=self.project_root,
+            console=render_console,
+        )
+        self.query_one("#diff", Static).update(
+            Text.from_ansi(output.getvalue().rstrip())
+        )
+
+
+def main() -> None:
+    """Read a unified diff from standard input and display it in Textual."""
     try:
-        _run_dunk()
+        DunkApp(diff=sys.stdin.read(), project_root=find_git_root()).run()
     except BrokenPipeError:
         # Python flushes standard streams on exit; redirect remaining output
         # to devnull to avoid another BrokenPipeError at shutdown
@@ -91,12 +161,18 @@ def main():
         sys.exit(1)
 
 
-def _run_dunk():
-    input = sys.stdin.readlines()
-    diff = "".join(input)
-    patch_set: PatchSet = PatchSet(diff)
+def render_patch_set(patch_set: PatchSet, project_root: Path, console: Console) -> None:
+    """Render a parsed patch set with the existing Rich diff presentation.
 
-    project_root: Path = find_git_root()
+    Parameters
+    ----------
+    patch_set
+        Parsed unified diff to render.
+    project_root
+        Repository root containing target files.
+    console
+        Rich console that receives the presentation.
+    """
 
     console.print(
         PatchSetHeader(
@@ -368,6 +444,7 @@ def _run_dunk():
             target_syntax_lines = console.render_lines(target_syntax)
 
             highlighted_source_lines = highlight_and_align_lines_in_hunk(
+                console,
                 hunk.source_start,
                 source_removed_linenos,
                 source_syntax_lines,
@@ -377,6 +454,7 @@ def _run_dunk():
                 gutter_size=len(str(source_lineno_max)) + 2,
             )
             highlighted_target_lines = highlight_and_align_lines_in_hunk(
+                console,
                 hunk.target_start,
                 target_added_linenos,
                 target_syntax_lines,
@@ -415,6 +493,7 @@ def _run_dunk():
 
 
 def highlight_and_align_lines_in_hunk(
+    console: Console,
     start_lineno: int,
     highlight_linenos: Set[Optional[int]],
     syntax_hunk_lines: List[List[Segment]],

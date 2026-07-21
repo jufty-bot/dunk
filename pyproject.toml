@@ -22,7 +22,8 @@ classifiers = [
 requires-python = ">=3.11"
 dependencies = [
     "unidiff>=0.7",
-    "rich>=12.1.0"
+    "rich>=12.1.0",
+    "textual>=0.80",
 ]
 
 [project.scripts]
@@ -34,8 +35,8 @@ repository = "https://github.com/darrenburns/dunk"
 issues = "https://github.com/darrenburns/dunk/issues"
 documentation = "https://github.com/darrenburns/dunk/blob/main/README.md"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest",
 ]
 
